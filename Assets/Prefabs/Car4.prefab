@@ -15,7 +15,7 @@ GameObject:
   - component: {fileID: -5244334922094746409}
   - component: {fileID: 4484347198072612250}
   m_Layer: 6
-  m_Name: Car1
+  m_Name: Car4
   m_TagString: Cars
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -80,7 +80,7 @@ SpriteRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_Sprite: {fileID: 4145286829007705970, guid: 1a851ff75abf8b3fea3164143fe38928, type: 3}
+  m_Sprite: {fileID: -5358581630990346854, guid: 1a851ff75abf8b3fea3164143fe38928, type: 3}
   m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_FlipX: 0
   m_FlipY: 0
@@ -156,7 +156,7 @@ BoxCollider2D:
   m_SpriteTilingProperty:
     border: {x: 0, y: 0, z: 0, w: 0}
     pivot: {x: 0.5, y: 0.5}
-    oldSize: {x: 0.6, y: 1.34}
+    oldSize: {x: 0.6, y: 1.33}
     newSize: {x: 0.6, y: 1.34}
     adaptiveTilingThreshold: 0.5
     drawMode: 0

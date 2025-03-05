@@ -11,8 +11,10 @@ public class CarAI : MonoBehaviour
     [Header("Collision Avoidance")]
     [Tooltip("Layer for the cars to detect.")]
     public LayerMask carLayer;
-    [Tooltip("Distance ahead to check for other cars")]
+    [Tooltip("Detection radius for collision avoidance.")]
     public float detectionDistance = 0.5f;
+    [Tooltip("Angle for detecting cars ahead.")]
+    public float coneAngle = 75f;
 
     [Header("Queue Settings")]
     [Tooltip("Gap between waiting cars")]
@@ -25,15 +27,21 @@ public class CarAI : MonoBehaviour
 
     [HideInInspector]
     public TrafficManager trafficManager;
-    
-    [HideInInspector]
-    public bool isWaiting = false;
-    private float waitTimer = 0f;
-    
-    [Tooltip("Remaining time (in seconds) before this car resumes movement.")]
+
+    private bool waitingForService = false;
+    private float serviceWaitTimer = 0f;
+    private bool hasWaited = false;
+
+    private bool waitingForTraffic = false;
+    private float trafficWaitTimer = 0f;
+
+    [Tooltip("Remaining time for task")]
     public float remainingWaitTime = 0f;
-    
+
     private Transform cachedTransform;
+    
+    private bool isTouchingCar = false;
+    private float collisionRecoveryTime = 0.5f;
 
     void Start()
     {
@@ -51,55 +59,77 @@ public class CarAI : MonoBehaviour
 
     void Update()
     {
-        remainingWaitTime = waitTimer;
-        
-        if (!isWaiting)
+        // Stop immediately if touching another car
+        if (isTouchingCar)
         {
-            Collider2D hit = Physics2D.OverlapCircle(cachedTransform.position + cachedTransform.up * detectionDistance, 0.1f, carLayer);
-            if (hit && hit.gameObject != gameObject)
+            isTouchingCar = false;
+            waitingForTraffic = true;
+            trafficWaitTimer = collisionRecoveryTime;
+            remainingWaitTime = trafficWaitTimer;
+            return;
+        }
+        
+        if (waitingForTraffic)
+        {
+            trafficWaitTimer -= Time.deltaTime;
+            remainingWaitTime = trafficWaitTimer;
+            if (trafficWaitTimer > 0f)
+                return;
+                
+            waitingForTraffic = false;
+            if (IsCarAhead())
+                return;
+        }
+        else
+        {
+            //DetectionCone
+            if (IsCarAhead())
             {
-                isWaiting = true;
-                waitTimer = 0.5f;
+                waitingForTraffic = true;
+                trafficWaitTimer = 0.5f;
+                remainingWaitTime = trafficWaitTimer;
+                return;
             }
         }
 
-        if (isWaiting)
+        // Process service waiting.
+        if (waitingForService)
         {
-            waitTimer -= Time.deltaTime;
-            if (waitTimer > 0f)
+            serviceWaitTimer -= Time.deltaTime;
+            remainingWaitTime = serviceWaitTimer;
+            if (serviceWaitTimer > 0f)
                 return;
-            else
-                isWaiting = false;
+                
+            waitingForService = false;
+            hasWaited = true;
+            
+            //Check if there's a car ahead before proceeding
+            if (IsCarAhead() || IsCarInQueueBox())
+                return;
         }
 
         if (!currentWaypoint)
             return;
-
-        // Calculate direction to the current waypoint.
+        
         Vector2 direction = currentWaypoint.transform.position - cachedTransform.position;
         float distanceSqr = direction.sqrMagnitude;
         float angle = Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg - 90f;
         Quaternion targetRotation = Quaternion.Euler(0, 0, angle);
         cachedTransform.rotation = Quaternion.Lerp(cachedTransform.rotation, targetRotation, Time.deltaTime * rotationSpeed);
-
-        // If within the stop distance...
+        
         if (distanceSqr < stopDistance * stopDistance)
         {
-            // Check if the waypoint is a service/stop point.
-            if (currentWaypoint.isStopPoint)
+            //For service stops, only wait once.
+            if (currentWaypoint.isStopPoint && !hasWaited)
             {
-                if (!isWaiting)
+                if (!waitingForService)
                 {
-                    //Query the TrafficManager for wait time per car at this service point.
-                    waitTimer = (trafficManager)
+                    serviceWaitTimer = (trafficManager != null)
                         ? trafficManager.GetServiceWaitTime(currentWaypoint.serviceType)
                         : 0f;
-                    isWaiting = true;
+                    waitingForService = true;
+                    remainingWaitTime = serviceWaitTimer;
                     return;
-                }
-                else
-                {
-                    isWaiting = false;
                 }
             }
 
@@ -107,6 +137,7 @@ public class CarAI : MonoBehaviour
             if (currentWaypoint.nextWaypoints != null && currentWaypoint.nextWaypoints.Count > 0)
             {
                 currentWaypoint = currentWaypoint.nextWaypoints[Random.Range(0, currentWaypoint.nextWaypoints.Count)];
+                hasWaited = false;
             }
             else
             {
@@ -115,36 +146,99 @@ public class CarAI : MonoBehaviour
             }
         }
 
-        //Check for cars ahead within the desired gap.
-        Vector2 boxSize = new Vector2(0.5f, waitingGap);
-        Vector2 boxCenter = (Vector2)cachedTransform.position + (Vector2)cachedTransform.up * (waitingGap * 0.5f);
-        Collider2D blocker = Physics2D.OverlapBox(boxCenter, boxSize, cachedTransform.eulerAngles.z, carLayer);
-        if (blocker && blocker.gameObject != gameObject)
-        {
-            CarAI frontCar = blocker.gameObject.GetComponent<CarAI>();
-            if (frontCar && frontCar.isWaiting)
-            {
-                return;
-            }
-        }
-        
+        //Check for cars in a queue using an OverlapBox.
+        if (IsCarInQueueBox())
+            return;
+
+        //Start driving again.
         cachedTransform.position += cachedTransform.up * (speed * Time.deltaTime);
     }
+    
+    private bool IsCarAhead()
+    {
+        Collider2D[] hits = Physics2D.OverlapCircleAll(cachedTransform.position, detectionDistance, carLayer);
+        foreach (Collider2D hit in hits)
+        {
+            if (hit.gameObject == gameObject)
+                continue;
 
-    // Visualize detection areas in the Scene view.
+            Vector2 directionToOther = (hit.transform.position - cachedTransform.position).normalized;
+            float angleBetween = Vector2.Angle(cachedTransform.up, directionToOther);
+            if (angleBetween < coneAngle * 0.5f)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    private bool IsCarInQueueBox()
+    {
+        Vector2 boxSize = new Vector2(0.5f, waitingGap);
+        Vector2 boxCenter = (Vector2)cachedTransform.position + (Vector2)cachedTransform.up * (waitingGap * 0.5f);
+        float angle = cachedTransform.eulerAngles.z;
+        Collider2D blocker = Physics2D.OverlapBox(boxCenter, boxSize, angle, carLayer);
+        
+        //Debug visualization
+#if UNITY_EDITOR
+        if (UnityEngine.Application.isEditor && !UnityEngine.Application.isPlaying)
+        {
+            // Draw the rotated box in editor mode
+            UnityEngine.Debug.DrawRay(boxCenter, Quaternion.Euler(0, 0, angle) * Vector3.right * (boxSize.x * 0.5f), Color.blue);
+            UnityEngine.Debug.DrawRay(boxCenter, Quaternion.Euler(0, 0, angle) * Vector3.left * (boxSize.x * 0.5f), Color.blue);
+            UnityEngine.Debug.DrawRay(boxCenter, Quaternion.Euler(0, 0, angle) * Vector3.up * (boxSize.y * 0.5f), Color.blue);
+            UnityEngine.Debug.DrawRay(boxCenter, Quaternion.Euler(0, 0, angle) * Vector3.down * (boxSize.y * 0.5f), Color.blue);
+        }
+#endif
+    
+        return (blocker != null && blocker.gameObject != gameObject);
+    }
+    
+    private void OnCollisionEnter2D(Collision2D collision)
+    {
+        //Check if we collided with another car
+        if (((1 << collision.gameObject.layer) & carLayer) != 0)
+        {
+            isTouchingCar = true;
+        }
+    }
+
+    private void OnTriggerEnter2D(Collider2D collider)
+    {
+        //Check if we triggered with another car
+        if (((1 << collider.gameObject.layer) & carLayer) != 0 && collider.gameObject != gameObject)
+        {
+            isTouchingCar = true;
+        }
+    }
+
+    //Visualize detection areas in the Scene view.
     void OnDrawGizmosSelected()
     {
         if (cachedTransform == null)
             cachedTransform = transform;
 
-        // Detection circle.
+        //Draw the cone for collision detection.
         Gizmos.color = Color.red;
-        Gizmos.DrawWireSphere(cachedTransform.position + cachedTransform.up * detectionDistance, 0.1f);
+        Vector2 origin = cachedTransform.position;
+        Vector2 forward = cachedTransform.up * detectionDistance;
+        Vector2 rightBoundary = Quaternion.Euler(0, 0, coneAngle * 0.5f) * cachedTransform.up * detectionDistance;
+        Vector2 leftBoundary = Quaternion.Euler(0, 0, -coneAngle * 0.5f) * cachedTransform.up * detectionDistance;
 
-        // Draw OverlapBox for queue checking.
+        Gizmos.DrawLine(origin, origin + forward);
+        Gizmos.DrawLine(origin, origin + rightBoundary);
+        Gizmos.DrawLine(origin, origin + leftBoundary);
+        Gizmos.DrawWireSphere(origin, detectionDistance);
+
+        //Draw the rotated OverlapBox for queue checking
         Gizmos.color = Color.green;
         Vector2 boxSize = new Vector2(0.5f, waitingGap);
         Vector2 boxCenter = (Vector2)cachedTransform.position + (Vector2)cachedTransform.up * (waitingGap * 0.5f);
-        Gizmos.DrawWireCube(boxCenter, boxSize);
+    
+        // Box rotation handler
+        Matrix4x4 originalMatrix = Gizmos.matrix;
+        Gizmos.matrix = Matrix4x4.TRS(boxCenter, cachedTransform.rotation, Vector3.one);
+        Gizmos.DrawWireCube(Vector3.zero, new Vector3(boxSize.x, boxSize.y, 0.1f));
+        Gizmos.matrix = originalMatrix;
     }
 }
